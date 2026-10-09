@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>عيني</title>
+<style>
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:#0b1f3a;color:#fff;font-family:Tahoma,Arial,sans-serif;display:flex;flex-direction:column;gap:12px;padding:14px;padding-bottom:calc(14px + env(safe-area-inset-bottom,0px))}
+h1{margin:0;font-size:30px}
+video{width:100%;max-height:24vh;object-fit:cover;border-radius:14px;background:#000}
+#say{flex:1;min-height:90px;background:#16335c;border-radius:14px;padding:14px;font-size:24px;line-height:1.7;overflow:auto}
+button{font:inherit;border:0;border-radius:18px;font-weight:bold;cursor:pointer}
+button:focus-visible{outline:4px solid #7fd1ff;outline-offset:3px}
+#ask{background:#7fd1ff;color:#0b1f3a;font-size:26px;min-height:68px}
+#go{background:#ffd23f;color:#0b1f3a;font-size:36px;min-height:28vh}
+</style>
+</head>
+<body>
+<h1>عيني</h1>
+<video id="v" playsinline muted aria-hidden="true"></video>
+<div id="say" role="status" aria-live="polite">اضغط الزر الأصفر الكبير. أنا أوجّهك بصوتي.</div>
+<button id="ask" aria-label="اسأل سؤال بصوتك">🎤 اسأل</button>
+<button id="go" aria-label="ابدأ التصوير">ابدأ</button>
+<input type="file" id="f" accept="image/*" capture="environment" hidden>
+<script>
+const $=id=>document.getElementById(id);
+const v=$('v'),say=$('say'),go=$('go'),ask=$('ask'),f=$('f');
+let stream=null,running=false,lastB64=null,lastAnswer='',lastSpoken='';
+const MAX_SECONDS=30,EVERY_MS=2000;
+
+function speak(t){return new Promise(res=>{
+  try{speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(t);u.lang='ar-SA';u.rate=.95;
+  u.onend=res;u.onerror=res;speechSynthesis.speak(u);setTimeout(res,8000)}catch(e){res()}})}
+function show(t){say.textContent=t;return speak(t)}
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+async function startCam(){
+  if(stream)return true;
+  try{stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false});
+    v.srcObject=stream;await v.play();return true}catch(e){return false}}
+
+function grab(){ // تصغير الصورة قبل الإرسال لتوفير التكلفة
+  const w=Math.min(v.videoWidth||800,800),h=Math.round(w*(v.videoHeight||600)/(v.videoWidth||800));
+  const c=document.createElement('canvas');c.width=w;c.height=h;c.getContext('2d').drawImage(v,0,0,w,h);
+  return c.toDataURL('image/jpeg',.7).split(',')[1];}
+
+async function call(image,question){
+  const r=await fetch('/api/describe',{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({image,question,lastAnswer})});
+  const d=await r.json();if(!r.ok)throw new Error(d.error||'خطأ');return d;}
+
+async function loop(){
+  running=true;go.textContent='إيقاف';const start=Date.now();
+  while(running&&Date.now()-start<MAX_SECONDS*1000){
+    try{
+      lastB64=grab();const d=await call(lastB64);
+      if(d.status==='ready'){lastAnswer=d.text;running=false;await show(d.text);break}
+      if(d.text&&d.text!==lastSpoken){lastSpoken=d.text;await show(d.text)}
+    }catch(e){running=false;await show(e.message||'صار خطأ. اضغط من جديد.');break}
+    await sleep(EVERY_MS);
+  }
+  if(running){running=false;await show('انتهى الوقت. اضغط ابدأ وحاول من جديد.')}
+  go.textContent='ابدأ';
+}
+
+go.onclick=async()=>{
+  if(running){running=false;speechSynthesis.cancel();go.textContent='ابدأ';return}
+  if(await startCam()){await show('تمام. ارفع الشيء قدام الكاميرا.');loop()}
+  else{await show('ما قدرت أفتح الكاميرا. راح أفتح لك كاميرا الجوال، صوّر وأنا أقرأ.');f.click()}};
+
+f.onchange=async()=>{const file=f.files[0];if(!file)return;
+  const bmp=await createImageBitmap(file);const w=Math.min(bmp.width,800),h=Math.round(w*bmp.height/bmp.width);
+  const c=document.createElement('canvas');c.width=w;c.height=h;c.getContext('2d').drawImage(bmp,0,0,w,h);
+  lastB64=c.toDataURL('image/jpeg',.7).split(',')[1];
+  try{const d=await call(lastB64);lastAnswer=d.text;await show(d.text)}catch(e){await show(e.message)}};
+
+ask.onclick=()=>{
+  if(!lastB64){show('صوّر أول شيء، بعدها اسألني.');return}
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){show('السؤال بالصوت ما يشتغل في هذا المتصفح.');return}
+  running=false;speechSynthesis.cancel();
+  const r=new SR();r.lang='ar-SA';r.interimResults=false;
+  r.onresult=async e=>{try{const d=await call(lastB64,e.results[0][0].transcript);lastAnswer=d.text;await show(d.text)}catch(x){await show(x.message)}};
+  r.onerror=()=>show('ما سمعتك. اضغط وكرر سؤالك.');
+  r.start();};
+</script>
+</body>
+</html>
